@@ -29,7 +29,7 @@ from root_numpy import array2tree
 
 class Model(object):
     """The Model class initializes and stores variables based on the provided
-    model settings file. They are used for KDE instance generation.
+    model settings file. It is used for the KDE instance generation.
     """
     def __init__(self, mc, settings, index=None, weighting=None, gamma=2.0,
                  phi0=1):
@@ -52,7 +52,12 @@ class Model(object):
         self.kde_norm = reduce((lambda x, y : x/y), range_norm)
 
     def _generate_weights(self, weighting):
-        if weighting == 'pl':
+        if isinstance(weighting, list):
+            if len(weighting) != len(self.mc):
+                raise ValueError('Weighting list length should be equal to the '
+                                 'MC length.')
+            weights = weighting
+        elif weighting == 'pl':
             weights = self.mc['orig_OW']*powerlaw(
                 self.mc['true_energy'], phi0=self.phi0,
                 gamma=self.gamma
@@ -65,9 +70,6 @@ class Model(object):
                 gamma=self.gamma
             )
             weights = self.mc['conv'] + diff_weights
-            # print('Rates [1/yr]:')
-            # print(np.sum(self.mc['conv']) * np.pi * 1e7)
-            # print(np.sum(diff_weights) * np.pi * 1e7)
         else:
             weights = np.ones(len(self.mc))
             self.logger.info('Using ones as weight.')
@@ -160,7 +162,7 @@ class KDE(object):
             v[i] = coord[i]
         return kernel_density.density(v)*self.model.kde_norm
 
-    def cross_validate(self, bandwidth, adaptive=False):
+    def cross_validate(self, bandwidth, adaptive=False, pdf_seed=None):
         kfold = KFold(n_splits=5, random_state=0, shuffle=True)
         llh = []
         zeros = []
@@ -168,7 +170,7 @@ class KDE(object):
             self._generate_tree_and_space(training_index)
 
             if adaptive:
-                kernel_density = self.generate_adaptive_kd(bandwidth)
+                kernel_density = self.generate_adaptive_kd(bandwidth, pdf_seed)
             else:
                 kernel_density = self.generate_binned_kd(bandwidth)
 
@@ -204,7 +206,7 @@ class KDE(object):
         self.cv_result = np.array([result_tuple], dtype=self.cv_result.dtype)
         return self.cv_result
 
-    def cross_validate_bandwidths(self, adaptive=False):
+    def cross_validate_bandwidths(self, adaptive=False, pdf_seed=None):
         for bandwidth in itertools.product(*self.model.bandwidths):
             self.logger.info('Bandwidth: %s', bandwidth)
             result = self.cross_validate(bandwidth, adaptive)
