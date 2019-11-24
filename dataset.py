@@ -4,7 +4,7 @@ import numpy as np
 from numpy.lib import recfunctions as np_rfn
 import os.path
 
-from config import CFG
+from config import CFG_HMN_LOCAL as CFG
 
 def load_and_prepare_data(pathfilenames):
     """Loads the data file(s), renames fields and applies diffuse dataset cuts.
@@ -23,17 +23,18 @@ def load_and_prepare_data(pathfilenames):
         pathfilenames = [pathfilenames]
     pathfilename = pathfilenames[0]
     assert_file_exists(pathfilename)
-    data = np.load(pathfilename)
+    data = np.load(pathfilename, allow_pickle=True)
     for i in range(1, len(pathfilenames)):
         pathfilename = pathfilenames[i]
         assert_file_exists(pathfilename)
-        data = np.append(data, np.load(pathfilename))
+        data = np.append(data, np.load(pathfilename), allow_pickle=True)
 
     # Rename fields based on MC_keys dictionary.
+    print CFG['MC_keys']
     data = np_rfn.rename_fields(data, CFG['MC_keys'])
 
     # Apply diffuse dataset cuts.
-    data = diffuse_cuts(data)
+    #data = diffuse_cuts(data)
 
     return data
 

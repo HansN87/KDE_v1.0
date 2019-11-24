@@ -9,7 +9,8 @@ import os
 from sklearn.model_selection import KFold
 from scipy.interpolate import RegularGridInterpolator
 
-from config import CFG
+#from config import CFG
+from config import CFG_HMN_LOCAL as CFG
 from dataset import load_and_prepare_data
 
 # ROOT imports.
@@ -22,6 +23,7 @@ from ROOT import (
     CombinedPhaseSpace,
     BinnedKernelDensity,
     AdaptiveKernelDensity,
+    FactorisedDensityPointSource,
     Logger
 )
 
@@ -65,7 +67,7 @@ class Model(object):
 
         if mc is None:
             if CFG['paths']['IC_mc'] is not None:
-                mc = load_and_prepare_data(CFG['paths']['IC_mc'])
+                mc = load_and_prepare_data(CFG['paths']['IC_mc'])  
             else:
                 raise ValueError('No suitable Monte Carlo provided.')
 
@@ -144,7 +146,7 @@ class KDE(object):
         """
         super(KDE, self).__init__()
         self.logger = logging.getLogger('KDE.' + __name__ + '.KDE')
-        self.model = model
+        self.model = model 
         self.binned_kernel = None
         self.adaptive_kernel = None
         self.cv_result_dtype = np.dtype({
@@ -153,6 +155,8 @@ class KDE(object):
         })
 
         self._generate_tree_and_space()
+        self._hybrid_kernel = None # approx kernel using semi-analytic formalism
+        # see description of generate_hybrid_kd method for details 
 
     def _generate_tree_and_space(self, index=None):
         """Private method to generate a tree object of the given data with
@@ -184,7 +188,45 @@ class KDE(object):
         else:
             self.space = CombinedPhaseSpace("PhspCombined", *spaces)
 
-    def generate_binned_kd(self, bandwidth, pdf_seed=None):
+    def generate_hybrid_kd(self, kde_2d, arbitrary_constant = 0.4):
+        """Wrapper method of `FactorisedDensityPointSource` constructor for 
+        3D kernel PDF (x1, x2, x3). Is uses a 2d KDE to represent f(log Sigma, log E).
+        The third dimension is constructed from the rayleigh pdf, i.e. traditional 
+        PS method: f(log Psi, log Sigma, log E) = f(log Psi | log Sigma) f(log Sigma, logE).
+        The 1st term on the RHS is the rayleigh PDF.
+        This 3D hybrid PDF turns out to be a great approx. pdf for a full 3D binned KDE.
+
+        This function is very specific. can only be used for this particular case.
+
+        Parameters
+        ---------- 
+        kde_2d : BinnedKernelDensity
+            KDE of f(log Sigma, log E)
+        arbitrary_constant : float
+            some constant to be added to the rayleigh
+            can effect how much tails count once the final KDE is convolved with this hybrid seed
+
+        Returns
+        -------
+        hybrid_kernel
+        """
+
+        args = []
+        args.extend([
+            "FactorisedDensityPointSource",
+            self.space,  # Phase space. 
+            kde_2d, # 2D KDE f(log Sigma, log E)
+            Double(arbitrary_constant)
+        ]) 
+      
+        self._hybrid_kernel = FactorisedDensityPointSource(*args)
+
+        # pass this as pdf_approx to the other KDE methods
+        return self._hybrid_kernel
+        
+
+
+    def generate_binned_kd(self, bandwidth, pdf_approx=None):
         """Wrapper method of `BinnedKernelDensity` constructor for N-dimensional
         kernel PDF with binned interpolation from the sample of points in an
         NTuple with weight.
@@ -193,7 +235,7 @@ class KDE(object):
         ----------
         bandwidth : list floats
             List of kernel widths.
-        pdf_seed : KernelDensity | None
+        pdf_approx : KernelDensity | None
             PDF seed for the approximation PDF.
 
         Returns
@@ -201,8 +243,8 @@ class KDE(object):
         binned_kernel : BinnedKernelDensity
             BinnedKernelDensity instance.
         """
-        if pdf_seed is None:
-            pdf_seed = 0
+        if pdf_approx is None:
+            pdf_approx = 0
 
         args = []
         args.extend([
@@ -214,14 +256,14 @@ class KDE(object):
         args.append("weight")  # Weights.
         args.extend(self.model.nbins)  # Numbers of bins.
         args.extend(bandwidth)  # Kernel widths.
-        args.extend([pdf_seed,  # Approximation PDF (0 for flat approximation).
+        args.extend([pdf_approx,  # Approximation PDF (0 for flat approximation).
                      0])  # Sample size for MC convolution (0 for binned convolution)
 
         self.binned_kernel = BinnedKernelDensity(*args)
 
         return self.binned_kernel
 
-    def generate_adaptive_kd(self, bandwidth, pdf_seed=None):
+    def generate_adaptive_kd(self, bandwidth, pdf_seed=None, pdf_approx=None):
         """Wrapper method of `AdaptiveKernelDensity` constructor for
         N-dimensional adaptive kernel PDF from the sample of points in an NTuple
         with weight.
@@ -231,7 +273,9 @@ class KDE(object):
         bandwidth : list floats
             List of kernel widths.
         pdf_seed : KernelDensity | None
-            PDF seed for the width scaling and the approximation PDF.
+            PDF seed for the width scaling.
+        pdf_approx : KernelDensity | None
+                    PDF for the approximation.
 
         Returns
         -------
@@ -241,6 +285,9 @@ class KDE(object):
         # Generate pdf_seed if not provided.
         if pdf_seed is None:
             pdf_seed = self.generate_binned_kd(bandwidth)
+
+        if pdf_approx is None:
+            pdf_approx = 0
 
         args = []
         args.extend([
@@ -253,7 +300,9 @@ class KDE(object):
         args.extend(self.model.nbins)  # Numbers of bins.
         args.extend(bandwidth)  # Kernel widths.
         args.extend([pdf_seed,  # PDF for kernel width scaling.
-                     pdf_seed,  # Approximation PDF (0 for flat approximation).
+                     #pdf_seed,  # Approximation PDF (0 for flat approximation). 
+                     pdf_approx, # Approximation PDF (comment by Hans: I don't think we should \
+                             # use pdf_seed here. Only needed for width scaling)
                      0])  # Sample size for MC convolution (0 for binned convolution)
 
         self.adaptive_kernel = AdaptiveKernelDensity(*args)
